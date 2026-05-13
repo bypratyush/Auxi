@@ -13,8 +13,6 @@ export type Technicality = 'technical' | 'non_technical' | 'mixed';
 export type AuditStatus =
   | 'queued'
   | 'scraping'
-  | 'screenshotting'
-  | 'a11y_scanning'
   | 'researching'
   | 'analyzing'
   | 'complete'

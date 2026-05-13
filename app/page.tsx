@@ -1,8 +1,28 @@
 'use client';
 
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { Mascot, type MascotPose } from './components/Mascot';
-import type { Technicality, WebsiteType } from '@/lib/audit/types';
+import type { AuditReport, AuditStatus, Technicality, WebsiteType } from '@/lib/audit/types';
+import type { StreamEvent } from '@/lib/audit/pipeline';
+
+function getSessionId(): string {
+  if (typeof window === 'undefined') return '';
+  let id = window.localStorage.getItem('auxi-session');
+  if (!id) {
+    id = `s-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+    window.localStorage.setItem('auxi-session', id);
+  }
+  return id;
+}
+
+const STAGE_COPY: Record<AuditStatus, string> = {
+  queued: 'queued',
+  scraping: 'reading the page',
+  researching: 'gathering studies',
+  analyzing: 'reasoning through findings',
+  complete: 'done',
+  failed: 'failed',
+};
 
 type Tone = 'non' | 'mixed' | 'tech';
 
@@ -63,6 +83,11 @@ export default function Home() {
   const [audience, setAudience] = useState('');
   const [tone, setTone] = useState<Tone | ''>('');
   const [submitted, setSubmitted] = useState(false);
+  const [auditStage, setAuditStage] = useState<AuditStatus | null>(null);
+  const [stageMessage, setStageMessage] = useState<string | null>(null);
+  const [report, setReport] = useState<AuditReport | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const auditAbortRef = useRef<AbortController | null>(null);
 
   const validUrl = /^([\w-]+\.)+[\w-]{2,}(\/.*)?$/i.test(url.trim());
   const canAdvance =
@@ -82,10 +107,82 @@ export default function Home() {
   function next() {
     if (!canAdvance) return;
     if (step < 4) setStep(step + 1);
-    else setSubmitted(true);
+    else {
+      setSubmitted(true);
+      void runAudit();
+    }
   }
   function back() {
     if (step > 1 && !submitted) setStep(step - 1);
+  }
+
+  async function runAudit() {
+    if (!category || !tone) return;
+    setAuditError(null);
+    setReport(null);
+    setAuditStage('queued');
+    setStageMessage(null);
+
+    const controller = new AbortController();
+    auditAbortRef.current = controller;
+
+    try {
+      const res = await fetch('/api/audits', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-auxi-session': getSessionId(),
+        },
+        body: JSON.stringify({
+          url: url.startsWith('http') ? url : `https://${url}`,
+          websiteType: category,
+          targetAudience: audience,
+          technicality: TONE_TO_TECHNICALITY[tone],
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok || !res.body) {
+        const errBody = await res.text().catch(() => '');
+        throw new Error(`Audit request failed (${res.status}): ${errBody.slice(0, 200)}`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          let evt: StreamEvent;
+          try {
+            evt = JSON.parse(trimmed);
+          } catch {
+            continue;
+          }
+          if (evt.type === 'stage') {
+            setAuditStage(evt.stage);
+            setStageMessage(evt.message ?? null);
+          } else if (evt.type === 'complete') {
+            setAuditStage('complete');
+            setReport(evt.report);
+          } else if (evt.type === 'error') {
+            setAuditError(evt.message);
+            setAuditStage('failed');
+          }
+        }
+      }
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return;
+      setAuditError(e instanceof Error ? e.message : String(e));
+      setAuditStage('failed');
+    }
   }
 
   useEffect(() => {
@@ -97,12 +194,17 @@ export default function Home() {
         next();
       }
       if (e.key === 'Escape') {
+        auditAbortRef.current?.abort();
         setStep(1);
         setUrl('');
         setCategory('');
         setAudience('');
         setTone('');
         setSubmitted(false);
+        setAuditStage(null);
+        setStageMessage(null);
+        setReport(null);
+        setAuditError(null);
       }
     }
     document.addEventListener('keydown', onKey);
@@ -293,10 +395,18 @@ export default function Home() {
             <div className="receipt">
               <div className="r-title">
                 <span>
-                  <span className="blink">●</span> audit queued
+                  <span className="blink">●</span>{' '}
+                  {auditError
+                    ? 'audit failed'
+                    : report
+                      ? 'audit complete'
+                      : auditStage
+                        ? STAGE_COPY[auditStage]
+                        : 'starting…'}
                 </span>
-                <span>~28s</span>
+                {!report && !auditError && <span>~25s</span>}
               </div>
+
               <div className="r-row">
                 <span>url</span>
                 <span className="r-val">{url}</span>
@@ -305,14 +415,37 @@ export default function Home() {
                 <span>category</span>
                 <span className="r-val">{categoryLabel}</span>
               </div>
-              <div className="r-row">
-                <span>audience</span>
-                <span className="r-val">{audience}</span>
-              </div>
-              <div className="r-row">
-                <span>tone</span>
-                <span className="r-val">{tone && TONE_TO_TECHNICALITY[tone]}</span>
-              </div>
+
+              {stageMessage && !report && !auditError && (
+                <div className="r-row">
+                  <span>step</span>
+                  <span className="r-val">{stageMessage}</span>
+                </div>
+              )}
+
+              {auditError && (
+                <div className="r-row">
+                  <span>error</span>
+                  <span className="r-val">{auditError}</span>
+                </div>
+              )}
+
+              {report && (
+                <>
+                  <div className="r-row">
+                    <span>score</span>
+                    <span className="r-val">{report.score} / 100</span>
+                  </div>
+                  <div className="r-row">
+                    <span>summary</span>
+                    <span className="r-val">{report.summary}</span>
+                  </div>
+                  <div className="r-row">
+                    <span>findings</span>
+                    <span className="r-val">{report.findings.length}</span>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
