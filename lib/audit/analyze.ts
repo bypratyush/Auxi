@@ -34,7 +34,7 @@ export async function analyze(args: AnalyzeInput): Promise<AuditReport> {
     temperature: 0.3,
   });
 
-  return parseReport(result.text, args);
+  return parseReport(result.text);
 }
 
 function buildSystemPrompt(subTool: SubToolModule, input: AuditInput): string {
@@ -108,7 +108,7 @@ ${researchBlock || '(no research returned)'}
 Produce the JSON audit now.`;
 }
 
-function parseReport(rawText: string, args: AnalyzeInput): AuditReport {
+function parseReport(rawText: string): AuditReport {
   const jsonText = extractJson(rawText);
   let parsed: unknown;
   try {
@@ -173,7 +173,7 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
-function mockAnalyze({ input, subTool, scraped, research }: AnalyzeInput): AuditReport {
+function mockAnalyze({ input, subTool, research }: AnalyzeInput): AuditReport {
   const pickedParams = subTool.parameters.slice(0, 4);
   const findings = pickedParams.map((parameter, i) => ({
     parameter,

@@ -1,6 +1,6 @@
 import { scrapePage } from '../services/firecrawl';
 import { captureScreenshot } from '../services/screenshotone';
-import { searchResearchBatch, type ResearchHit } from '../services/tavily';
+import { searchResearchBatch } from '../services/tavily';
 import { subTools } from '../sub-tools';
 import {
   createAudit,
@@ -12,7 +12,7 @@ import {
   writeResearchSources,
 } from '../supabase/audits';
 import { analyze } from './analyze';
-import type { AuditFinding, AuditInput, AuditReport, AuditStatus } from './types';
+import type { AuditInput, AuditReport, AuditStatus } from './types';
 
 export type StreamEvent =
   | { type: 'audit_id'; id: string }
