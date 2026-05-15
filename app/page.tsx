@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Mascot, type MascotPose } from './components/Mascot';
+import { Report } from './components/Report';
 import type { AuditReport, AuditStatus, Technicality, WebsiteType } from '@/lib/audit/types';
 import type { StreamEvent } from '@/lib/audit/pipeline';
 
@@ -87,6 +88,7 @@ export default function Home() {
   const [stageMessage, setStageMessage] = useState<string | null>(null);
   const [report, setReport] = useState<AuditReport | null>(null);
   const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditId, setAuditId] = useState<string | null>(null);
   const auditAbortRef = useRef<AbortController | null>(null);
 
   const validUrl = /^([\w-]+\.)+[\w-]{2,}(\/.*)?$/i.test(url.trim());
@@ -122,6 +124,7 @@ export default function Home() {
     setReport(null);
     setAuditStage('queued');
     setStageMessage(null);
+    setAuditId(null);
 
     const controller = new AbortController();
     auditAbortRef.current = controller;
@@ -166,12 +169,15 @@ export default function Home() {
           } catch {
             continue;
           }
-          if (evt.type === 'stage') {
+          if (evt.type === 'audit_id') {
+            setAuditId(evt.id);
+          } else if (evt.type === 'stage') {
             setAuditStage(evt.stage);
             setStageMessage(evt.message ?? null);
           } else if (evt.type === 'complete') {
             setAuditStage('complete');
             setReport(evt.report);
+            setAuditId(evt.auditId);
           } else if (evt.type === 'error') {
             setAuditError(evt.message);
             setAuditStage('failed');
@@ -205,6 +211,7 @@ export default function Home() {
         setStageMessage(null);
         setReport(null);
         setAuditError(null);
+        setAuditId(null);
       }
     }
     document.addEventListener('keydown', onKey);
@@ -233,6 +240,33 @@ export default function Home() {
       </header>
 
       <main className="main">
+        {report ? (
+          <div className="col col-report">
+            <Report
+              report={report}
+              url={url.startsWith('http') ? url : `https://${url}`}
+              websiteTypeLabel={categoryLabel}
+              websiteType={category as WebsiteType}
+              audience={audience}
+              technicality={tone ? TONE_TO_TECHNICALITY[tone] : 'mixed'}
+              auditId={auditId}
+              onRestart={() => {
+                auditAbortRef.current?.abort();
+                setStep(1);
+                setUrl('');
+                setCategory('');
+                setAudience('');
+                setTone('');
+                setSubmitted(false);
+                setAuditStage(null);
+                setStageMessage(null);
+                setReport(null);
+                setAuditError(null);
+                setAuditId(null);
+              }}
+            />
+          </div>
+        ) : (
         <div className="col">
           <section className="intro">
             <div className="mascot-row">
@@ -430,25 +464,10 @@ export default function Home() {
                 </div>
               )}
 
-              {report && (
-                <>
-                  <div className="r-row">
-                    <span>score</span>
-                    <span className="r-val">{report.score} / 100</span>
-                  </div>
-                  <div className="r-row">
-                    <span>summary</span>
-                    <span className="r-val">{report.summary}</span>
-                  </div>
-                  <div className="r-row">
-                    <span>findings</span>
-                    <span className="r-val">{report.findings.length}</span>
-                  </div>
-                </>
-              )}
             </div>
           )}
         </div>
+        )}
       </main>
 
       <footer className="foot">

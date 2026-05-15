@@ -1,10 +1,67 @@
-// Typed Supabase helpers for the audit data model.
-// All writes go through the service-role client (server-side only).
+// Supabase data-layer helpers using direct REST/fetch (Edge-runtime compatible).
+// We don't use @supabase/supabase-js here because it's flaky in Vercel Edge.
 
-import { createSupabaseAdminClient } from './admin';
 import type { AuditFinding, AuditInput, AuditStatus } from '../audit/types';
 import type { ResearchHit } from '../services/tavily';
 import type { ScrapedPage } from '../services/firecrawl';
+
+function baseUrl(): string {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!url) throw new Error('NEXT_PUBLIC_SUPABASE_URL is not set');
+  return `${url.replace(/\/$/, '')}/rest/v1`;
+}
+
+function authHeaders(): Record<string, string> {
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!key) throw new Error('SUPABASE_SERVICE_ROLE_KEY is not set');
+  return {
+    apikey: key,
+    Authorization: `Bearer ${key}`,
+    'Content-Type': 'application/json',
+  };
+}
+
+async function pgPost<T = unknown>(
+  table: string,
+  rows: Record<string, unknown> | Record<string, unknown>[],
+  opts: { returning?: 'representation' | 'minimal' } = {},
+): Promise<T> {
+  const headers: Record<string, string> = { ...authHeaders() };
+  if (opts.returning === 'representation') {
+    headers.Prefer = 'return=representation';
+  } else if (opts.returning === 'minimal') {
+    headers.Prefer = 'return=minimal';
+  }
+  const res = await fetch(`${baseUrl()}/${table}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(rows),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`${table} insert ${res.status}: ${body.slice(0, 300)}`);
+  }
+  if (opts.returning === 'minimal') {
+    return undefined as unknown as T;
+  }
+  return (await res.json()) as T;
+}
+
+async function pgPatch(
+  table: string,
+  filter: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const res = await fetch(`${baseUrl()}/${table}?${filter}`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(), Prefer: 'return=minimal' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`${table} patch ${res.status}: ${body.slice(0, 300)}`);
+  }
+}
 
 export interface AuditRow {
   id: string;
@@ -20,64 +77,70 @@ export interface AuditRow {
 }
 
 export async function createAudit(input: AuditInput, sessionId: string): Promise<AuditRow> {
-  const db = createSupabaseAdminClient();
-  const { data, error } = await db
-    .from('audits')
-    .insert({
+  const rows = await pgPost<AuditRow[]>(
+    'audits',
+    {
       session_id: sessionId,
       url: input.url,
       website_type: input.websiteType,
       target_audience: input.targetAudience,
       technicality: input.technicality,
       status: 'queued',
-    })
-    .select('*')
-    .single();
-  if (error) throw new Error(`createAudit: ${error.message}`);
-  return data as AuditRow;
+    },
+    { returning: 'representation' },
+  );
+  if (!rows || rows.length === 0) throw new Error('createAudit: no row returned');
+  return rows[0];
 }
 
-export async function updateAuditStatus(auditId: string, status: AuditStatus, error?: string) {
-  const db = createSupabaseAdminClient();
+export async function updateAuditStatus(
+  auditId: string,
+  status: AuditStatus,
+  error?: string,
+): Promise<void> {
   const patch: Record<string, unknown> = { status };
   if (error) patch.error = error;
-  const { error: err } = await db.from('audits').update(patch).eq('id', auditId);
-  if (err) throw new Error(`updateAuditStatus: ${err.message}`);
+  await pgPatch('audits', `id=eq.${auditId}`, patch);
 }
 
-export async function finalizeAudit(auditId: string, summary: string, score: number) {
-  const db = createSupabaseAdminClient();
-  const { error } = await db
-    .from('audits')
-    .update({ status: 'complete', summary, score })
-    .eq('id', auditId);
-  if (error) throw new Error(`finalizeAudit: ${error.message}`);
+export async function finalizeAudit(
+  auditId: string,
+  summary: string,
+  score: number,
+): Promise<void> {
+  await pgPatch('audits', `id=eq.${auditId}`, {
+    status: 'complete',
+    summary,
+    score,
+  });
 }
 
 export async function writePageArtifacts(
   auditId: string,
   scraped: ScrapedPage,
   screenshotUrl: string | null,
-) {
-  const db = createSupabaseAdminClient();
+): Promise<void> {
   const wordCount = scraped.markdown.trim().split(/\s+/).length;
-  const { error } = await db.from('page_artifacts').insert({
-    audit_id: auditId,
-    scraped_markdown: scraped.markdown,
-    scraped_html: scraped.html,
-    screenshot_url: screenshotUrl,
-    page_title: scraped.title,
-    meta_description: scraped.description,
-    word_count: wordCount,
-  });
-  if (error) throw new Error(`writePageArtifacts: ${error.message}`);
+  await pgPost(
+    'page_artifacts',
+    {
+      audit_id: auditId,
+      scraped_markdown: scraped.markdown,
+      scraped_html: scraped.html,
+      screenshot_url: screenshotUrl,
+      page_title: scraped.title,
+      meta_description: scraped.description,
+      word_count: wordCount,
+    },
+    { returning: 'minimal' },
+  );
 }
 
 export async function writeFindings(
   auditId: string,
   findings: AuditFinding[],
 ): Promise<{ id: string; ordinal: number }[]> {
-  const db = createSupabaseAdminClient();
+  if (findings.length === 0) return [];
   const rows = findings.map((f, i) => ({
     audit_id: auditId,
     ordinal: i,
@@ -86,18 +149,20 @@ export async function writeFindings(
     observation: f.observation,
     recommendation: f.recommendation,
   }));
-  const { data, error } = await db.from('findings').insert(rows).select('id, ordinal');
-  if (error) throw new Error(`writeFindings: ${error.message}`);
-  return data as { id: string; ordinal: number }[];
+  const inserted = await pgPost<{ id: string; ordinal: number }[]>(
+    'findings',
+    rows,
+    { returning: 'representation' },
+  );
+  return inserted;
 }
 
 export async function writeResearchSources(
   auditId: string,
   sources: ResearchHit[],
   findingId: string | null = null,
-) {
+): Promise<void> {
   if (sources.length === 0) return;
-  const db = createSupabaseAdminClient();
   const rows = sources.map((s) => ({
     audit_id: auditId,
     finding_id: findingId,
@@ -106,14 +171,21 @@ export async function writeResearchSources(
     snippet: s.snippet,
     query: s.query,
   }));
-  const { error } = await db.from('research_sources').insert(rows);
-  if (error) throw new Error(`writeResearchSources: ${error.message}`);
+  await pgPost('research_sources', rows, { returning: 'minimal' });
 }
 
-export async function writeProgressEvent(auditId: string, stage: AuditStatus, message?: string) {
-  const db = createSupabaseAdminClient();
-  const { error } = await db
-    .from('progress_events')
-    .insert({ audit_id: auditId, stage, message: message ?? null });
-  if (error) throw new Error(`writeProgressEvent: ${error.message}`);
+export async function writeProgressEvent(
+  auditId: string,
+  stage: AuditStatus,
+  message?: string,
+): Promise<void> {
+  await pgPost(
+    'progress_events',
+    {
+      audit_id: auditId,
+      stage,
+      message: message ?? null,
+    },
+    { returning: 'minimal' },
+  );
 }
