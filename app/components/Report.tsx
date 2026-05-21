@@ -12,6 +12,7 @@ export interface ReportProps {
   audience: string;
   technicality: Technicality;
   auditId: string | null;
+  screenshotUrl: string | null;
   onRestart: () => void;
 }
 
@@ -30,6 +31,7 @@ export function Report({
   audience,
   technicality,
   auditId,
+  screenshotUrl,
   onRestart,
 }: ReportProps) {
   const counts = SEVERITY_ORDER.reduce<Record<AuditFinding['severity'], number>>(
@@ -117,6 +119,22 @@ export function Report({
 
           <p className="deck-summary-text">{report.summary}</p>
         </div>
+
+        {screenshotUrl && (
+          <a
+            className="deck-snapshot"
+            href={screenshotUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Open full-page screenshot"
+          >
+            <span className="deck-snapshot-bezel">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={screenshotUrl} alt={`Screenshot of ${displayHost}`} loading="lazy" />
+            </span>
+            <span className="deck-snapshot-label">captured page ↗</span>
+          </a>
+        )}
       </section>
 
       <FloppyCarousel items={items} totalDisks={totalDisks} />

@@ -32,11 +32,18 @@ async function pgPost<T = unknown>(
   } else if (opts.returning === 'minimal') {
     headers.Prefer = 'return=minimal';
   }
-  const res = await fetch(`${baseUrl()}/${table}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(rows),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl()}/${table}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(rows),
+    });
+  } catch (e) {
+    throw new Error(
+      `Supabase unreachable while writing ${table} — likely a DNS/network issue. (${String(e)})`,
+    );
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`${table} insert ${res.status}: ${body.slice(0, 300)}`);
@@ -52,11 +59,18 @@ async function pgPatch(
   filter: string,
   patch: Record<string, unknown>,
 ): Promise<void> {
-  const res = await fetch(`${baseUrl()}/${table}?${filter}`, {
-    method: 'PATCH',
-    headers: { ...authHeaders(), Prefer: 'return=minimal' },
-    body: JSON.stringify(patch),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl()}/${table}?${filter}`, {
+      method: 'PATCH',
+      headers: { ...authHeaders(), Prefer: 'return=minimal' },
+      body: JSON.stringify(patch),
+    });
+  } catch (e) {
+    throw new Error(
+      `Supabase unreachable while updating ${table} — likely a DNS/network issue. (${String(e)})`,
+    );
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`${table} patch ${res.status}: ${body.slice(0, 300)}`);
@@ -115,25 +129,30 @@ export async function finalizeAudit(
   });
 }
 
+export interface PageArtifactInput {
+  role: string;
+  url: string;
+  scraped: ScrapedPage;
+  screenshotUrl: string | null;
+}
+
 export async function writePageArtifacts(
   auditId: string,
-  scraped: ScrapedPage,
-  screenshotUrl: string | null,
+  pages: PageArtifactInput[],
 ): Promise<void> {
-  const wordCount = scraped.markdown.trim().split(/\s+/).length;
-  await pgPost(
-    'page_artifacts',
-    {
-      audit_id: auditId,
-      scraped_markdown: scraped.markdown,
-      scraped_html: scraped.html,
-      screenshot_url: screenshotUrl,
-      page_title: scraped.title,
-      meta_description: scraped.description,
-      word_count: wordCount,
-    },
-    { returning: 'minimal' },
-  );
+  if (pages.length === 0) return;
+  const rows = pages.map((p) => ({
+    audit_id: auditId,
+    page_role: p.role,
+    url: p.url,
+    scraped_markdown: p.scraped.markdown,
+    scraped_html: p.scraped.html,
+    screenshot_url: p.screenshotUrl,
+    page_title: p.scraped.title,
+    meta_description: p.scraped.description,
+    word_count: p.scraped.markdown.trim().split(/\s+/).length,
+  }));
+  await pgPost('page_artifacts', rows, { returning: 'minimal' });
 }
 
 export async function writeFindings(

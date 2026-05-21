@@ -13,4 +13,30 @@ export const blogModule: SubToolModule = {
   ],
   researchSources: ['nngroup.com', 'smashingmagazine.com'],
   systemPrompt: `You are auditing a Blog / Content website. Prioritize NNGroup eye-tracking & scannability research and Smashing Magazine typography findings.`,
+  discoveryPlan: {
+    roles: [
+      {
+        role: 'article',
+        label: 'Article',
+        priority: 1,
+        pathPatterns: [/\/(post|article|blog|story|read|essay)\/[^\/]+/i, /\/\d{4}\/\d{2}\/[^\/]+/i],
+        pathExcludes: [/\/(category|tag|author)\//i],
+        maxCount: 1,
+      },
+      {
+        role: 'category',
+        label: 'Category / Tag',
+        priority: 2,
+        pathPatterns: [/\/(category|categories|tag|tags|topics?)(\/|$)/i],
+        maxCount: 1,
+      },
+      {
+        role: 'about',
+        label: 'About / Author',
+        priority: 3,
+        pathPatterns: [/\/(about|author|bio|team)(\/|$)/i],
+        maxCount: 1,
+      },
+    ],
+  },
 };

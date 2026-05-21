@@ -1,4 +1,5 @@
 import type { WebsiteType } from '../audit/types';
+import type { DiscoveryPlan } from '../audit/page-discovery';
 import { ecommerceModule } from './ecommerce';
 import { saasModule } from './saas';
 import { landingModule } from './landing';
@@ -17,6 +18,8 @@ export interface SubToolModule {
   researchSources: string[];
   // The specialist system prompt fragment appended to the base audit prompt.
   systemPrompt: string;
+  // Which pages we scrape beyond the homepage and how to recognize them.
+  discoveryPlan: DiscoveryPlan;
 }
 
 export const subTools: Record<WebsiteType, SubToolModule> = {

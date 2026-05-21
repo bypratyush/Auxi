@@ -87,6 +87,7 @@ export default function Home() {
   const [auditStage, setAuditStage] = useState<AuditStatus | null>(null);
   const [stageMessage, setStageMessage] = useState<string | null>(null);
   const [report, setReport] = useState<AuditReport | null>(null);
+  const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [auditId, setAuditId] = useState<string | null>(null);
   const auditAbortRef = useRef<AbortController | null>(null);
@@ -122,6 +123,7 @@ export default function Home() {
     if (!category || !tone) return;
     setAuditError(null);
     setReport(null);
+    setScreenshotUrl(null);
     setAuditStage('queued');
     setStageMessage(null);
     setAuditId(null);
@@ -178,6 +180,7 @@ export default function Home() {
             setAuditStage('complete');
             setReport(evt.report);
             setAuditId(evt.auditId);
+            setScreenshotUrl(evt.screenshotUrl);
           } else if (evt.type === 'error') {
             setAuditError(evt.message);
             setAuditStage('failed');
@@ -210,6 +213,7 @@ export default function Home() {
         setAuditStage(null);
         setStageMessage(null);
         setReport(null);
+        setScreenshotUrl(null);
         setAuditError(null);
         setAuditId(null);
       }
@@ -250,6 +254,7 @@ export default function Home() {
               audience={audience}
               technicality={tone ? TONE_TO_TECHNICALITY[tone] : 'mixed'}
               auditId={auditId}
+              screenshotUrl={screenshotUrl}
               onRestart={() => {
                 auditAbortRef.current?.abort();
                 setStep(1);
@@ -261,6 +266,7 @@ export default function Home() {
                 setAuditStage(null);
                 setStageMessage(null);
                 setReport(null);
+                setScreenshotUrl(null);
                 setAuditError(null);
                 setAuditId(null);
               }}

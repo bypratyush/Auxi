@@ -1,8 +1,10 @@
 // Audit analysis — the LLM step.
 //
-// v0 is text-only: scraped markdown + research snippets → structured findings.
-// Vision (passing the screenshot to the model) is a v0.5 add — most UX issues
-// on a typical page are identifiable from the DOM/markdown alone.
+// Multi-page: each audit scrapes the homepage plus category-critical pages
+// (pricing, checkout, etc.). The LLM sees them tagged by role and produces
+// findings that can be page-specific or cross-page.
+//
+// v0 is text-only (scraped markdown + research). Vision is a v0.5 add.
 
 import { converse } from '../services/llm';
 import type { ScrapedPage } from '../services/firecrawl';
@@ -11,12 +13,22 @@ import type { SubToolModule } from '../sub-tools';
 import type { AuditFinding, AuditInput, AuditReport } from './types';
 
 const USE_MOCK = process.env.LLM_USE_MOCK === 'true';
-const MAX_MARKDOWN_CHARS = 18000;
+// Per-page cap — 5 pages × 10k chars ≈ 12.5k tokens, comfortable for Nova Pro.
+const MAX_MARKDOWN_CHARS_PER_PAGE = 10000;
+
+export interface AnalyzePage {
+  role: string;
+  label: string;
+  url: string;
+  scraped: ScrapedPage;
+}
 
 export interface AnalyzeInput {
   input: AuditInput;
   subTool: SubToolModule;
-  scraped: ScrapedPage;
+  pages: AnalyzePage[];
+  attachmentRoles: { role: string; label: string; url: string }[];
+  missingRoles: { role: string; label: string }[];
   screenshotUrl: string | null;
   research: ResearchHit[];
 }
@@ -52,11 +64,21 @@ ${subTool.systemPrompt}
 AUDIENCE FRAMING: ${input.targetAudience}. ${technicalityHint}
 
 YOUR JOB
-- Review the scraped page content (markdown) and provided research snippets.
+- You are given several pages from one website, each tagged with a ROLE (home, pricing, checkout, etc.).
+- Review all of them together. Findings may be specific to one page or span multiple pages
+  (e.g. "the value proposition on the homepage doesn't match the pricing tiers").
 - Produce 4 to 7 concrete, specific usability findings.
-- Each finding must reference observable evidence from the page (not generic advice).
+- Each finding must reference observable evidence from the pages — name the page/role when relevant.
 - Cite research only where it directly backs your observation — never pad with irrelevant sources.
-- Calibrate severity honestly: 'critical' = blocks user goals; 'high' = significant friction; 'medium' = clear improvement opportunity; 'low' = nice-to-have polish.
+- Calibrate severity honestly: 'critical' = blocks user goals; 'high' = significant friction;
+  'medium' = clear improvement opportunity; 'low' = nice-to-have polish.
+
+HANDLING PAGES NOT SCRAPED
+- "PAGES FOUND ONLY AS DOWNLOADS": the content exists but is behind a file download (e.g. a PDF resume).
+  Do NOT treat this as missing. Judge whether forcing a download is appropriate friction for this
+  audience and category — it is often a minor/medium issue, rarely critical.
+- "PAGES NOT FOUND": no such page exists on the site. Assess whether its absence is a genuine
+  usability problem for this category before flagging it (some categories don't need every page).
 
 OUTPUT FORMAT
 Respond with ONLY a valid JSON object matching this exact shape, wrapped in a single \`\`\`json code block:
@@ -69,7 +91,7 @@ Respond with ONLY a valid JSON object matching this exact shape, wrapped in a si
     {
       "parameter": "one of the focus parameters for this domain",
       "severity": "critical | high | medium | low",
-      "observation": "what you actually saw on this specific page (be concrete)",
+      "observation": "what you actually saw — name the page/role when relevant",
       "research": [
         { "claim": "the relevant research finding in one sentence", "source": "https://..." }
       ],
@@ -84,26 +106,55 @@ Respond with ONLY a valid JSON object matching this exact shape, wrapped in a si
 - Do NOT output anything outside the json block. No preamble, no follow-up commentary.`;
 }
 
-function buildUserPrompt({ input, scraped, research }: AnalyzeInput): string {
-  const md = scraped.markdown.length > MAX_MARKDOWN_CHARS
-    ? scraped.markdown.slice(0, MAX_MARKDOWN_CHARS) + '\n\n[…truncated]'
-    : scraped.markdown;
+function buildUserPrompt({
+  input,
+  pages,
+  attachmentRoles,
+  missingRoles,
+  research,
+}: AnalyzeInput): string {
+  const pageBlocks = pages
+    .map((p) => {
+      const md =
+        p.scraped.markdown.length > MAX_MARKDOWN_CHARS_PER_PAGE
+          ? p.scraped.markdown.slice(0, MAX_MARKDOWN_CHARS_PER_PAGE) + '\n\n[…truncated]'
+          : p.scraped.markdown;
+      return `═══ PAGE [role: ${p.role}] ${p.label}
+URL: ${p.url}
+TITLE: ${p.scraped.title ?? '(none)'}
+META: ${p.scraped.description ?? '(none)'}
+
+${md}`;
+    })
+    .join('\n\n');
+
+  const attachmentBlock =
+    attachmentRoles.length > 0
+      ? attachmentRoles.map((a) => `- ${a.label}: ${a.url}`).join('\n')
+      : '(none)';
+
+  const missingBlock =
+    missingRoles.length > 0
+      ? missingRoles.map((m) => `- ${m.label}`).join('\n')
+      : '(none)';
 
   const researchBlock = research
     .map((r, i) => `[${i + 1}] ${r.title}\n    ${r.url}\n    ${r.snippet.slice(0, 280)}`)
     .join('\n\n');
 
-  return `URL: ${input.url}
-PAGE TITLE: ${scraped.title ?? '(none)'}
-META DESCRIPTION: ${scraped.description ?? '(none)'}
+  return `SITE AUDITED: ${input.url}
+PAGES SCRAPED: ${pages.length}
 
------ SCRAPED PAGE CONTENT (markdown) -----
-${md}
------ END PAGE CONTENT -----
+${pageBlocks}
+
+----- PAGES FOUND ONLY AS DOWNLOADS (content exists, but behind a file) -----
+${attachmentBlock}
+
+----- PAGES NOT FOUND ON THE SITE -----
+${missingBlock}
 
 ----- RESEARCH SNIPPETS (cite when directly applicable) -----
 ${researchBlock || '(no research returned)'}
------ END RESEARCH -----
 
 Produce the JSON audit now.`;
 }
@@ -114,14 +165,15 @@ function parseReport(rawText: string): AuditReport {
   try {
     parsed = JSON.parse(jsonText);
   } catch (e) {
-    throw new Error(`LLM returned unparseable JSON: ${(e as Error).message}\n---\n${rawText.slice(0, 600)}`);
+    throw new Error(
+      `LLM returned unparseable JSON: ${(e as Error).message}\n---\n${rawText.slice(0, 600)}`,
+    );
   }
 
   if (!isReportShape(parsed)) {
     throw new Error(`LLM JSON did not match expected shape. Got: ${JSON.stringify(parsed).slice(0, 400)}`);
   }
 
-  // Clamp + sanitize.
   const validSeverities = new Set(['critical', 'high', 'medium', 'low']);
   const findings: AuditFinding[] = parsed.findings
     .filter((f) => validSeverities.has(f.severity))
@@ -129,10 +181,12 @@ function parseReport(rawText: string): AuditReport {
       parameter: String(f.parameter).trim(),
       severity: f.severity as AuditFinding['severity'],
       observation: String(f.observation).trim(),
-      research: (f.research ?? []).map((r) => ({
-        claim: String(r.claim ?? '').trim(),
-        source: String(r.source ?? '').trim(),
-      })).filter((r) => r.claim && r.source),
+      research: (f.research ?? [])
+        .map((r) => ({
+          claim: String(r.claim ?? '').trim(),
+          source: String(r.source ?? '').trim(),
+        }))
+        .filter((r) => r.claim && r.source),
       recommendation: String(f.recommendation).trim(),
     }));
 
@@ -147,7 +201,6 @@ function parseReport(rawText: string): AuditReport {
 function extractJson(text: string): string {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fenced && fenced[1]) return fenced[1].trim();
-  // Fallback: assume the whole response is JSON.
   return text.trim();
 }
 
@@ -173,12 +226,12 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
-function mockAnalyze({ input, subTool, research }: AnalyzeInput): AuditReport {
+function mockAnalyze({ input, subTool, pages, research }: AnalyzeInput): AuditReport {
   const pickedParams = subTool.parameters.slice(0, 4);
   const findings = pickedParams.map((parameter, i) => ({
     parameter,
     severity: (['critical', 'high', 'medium', 'low'] as const)[i % 4],
-    observation: `[mock] The ${parameter} aspect of ${input.url} shows opportunities for improvement.`,
+    observation: `[mock] The ${parameter} aspect shows opportunities for improvement across ${pages.length} scanned page(s).`,
     research: research.slice(i * 2, i * 2 + 2).map((r) => ({
       claim: r.snippet.slice(0, 120),
       source: r.url,
@@ -187,7 +240,7 @@ function mockAnalyze({ input, subTool, research }: AnalyzeInput): AuditReport {
   }));
 
   return {
-    summary: `[mock] Initial audit of ${input.url} (${subTool.label}) for ${input.targetAudience}.`,
+    summary: `[mock] Initial audit of ${input.url} (${subTool.label}) for ${input.targetAudience}, ${pages.length} page(s) scanned.`,
     score: 72,
     findings,
     generatedAt: new Date().toISOString(),
