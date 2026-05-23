@@ -79,7 +79,8 @@ async function pgPatch(
 
 export interface AuditRow {
   id: string;
-  session_id: string;
+  user_id: string | null;
+  session_id: string | null;
   url: string;
   website_type: string;
   target_audience: string;
@@ -90,11 +91,11 @@ export interface AuditRow {
   error: string | null;
 }
 
-export async function createAudit(input: AuditInput, sessionId: string): Promise<AuditRow> {
+export async function createAudit(input: AuditInput, userId: string): Promise<AuditRow> {
   const rows = await pgPost<AuditRow[]>(
     'audits',
     {
-      session_id: sessionId,
+      user_id: userId,
       url: input.url,
       website_type: input.websiteType,
       target_audience: input.targetAudience,

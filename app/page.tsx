@@ -3,18 +3,9 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Mascot, type MascotPose } from './components/Mascot';
 import { Report } from './components/Report';
+import { UserMenu } from './components/UserMenu';
 import type { AuditReport, AuditStatus, Technicality, WebsiteType } from '@/lib/audit/types';
 import type { StreamEvent } from '@/lib/audit/pipeline';
-
-function getSessionId(): string {
-  if (typeof window === 'undefined') return '';
-  let id = window.localStorage.getItem('auxi-session');
-  if (!id) {
-    id = `s-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-    window.localStorage.setItem('auxi-session', id);
-  }
-  return id;
-}
 
 const STAGE_COPY: Record<AuditStatus, string> = {
   queued: 'queued',
@@ -136,7 +127,6 @@ export default function Home() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-auxi-session': getSessionId(),
         },
         body: JSON.stringify({
           url: url.startsWith('http') ? url : `https://${url}`,
@@ -240,6 +230,7 @@ export default function Home() {
             <span className="dot" />
             v0.1
           </span>
+          <UserMenu />
         </div>
       </header>
 

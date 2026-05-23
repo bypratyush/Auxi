@@ -2,9 +2,12 @@
 //
 // Each line is one StreamEvent. The connection stays open for the full pipeline
 // (target ~15–25s) and closes after the final 'complete' or 'error' event.
+// Requires the user to be signed in — reads the user from the Supabase session
+// cookie that middleware refreshes on every request.
 
 import { z } from 'zod';
 import { runAuditPipeline, type StreamEvent } from '@/lib/audit/pipeline';
+import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 export const runtime = 'edge';
 export const maxDuration = 60;
@@ -26,6 +29,19 @@ const AuditInputSchema = z.object({
 });
 
 export async function POST(req: Request) {
+  // 1. Require a signed-in user.
+  const supabase = createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return new Response(JSON.stringify({ error: 'not authenticated' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // 2. Parse + validate body.
   let payload: unknown;
   try {
     payload = await req.json();
@@ -44,10 +60,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const sessionId =
-    req.headers.get('x-auxi-session') ??
-    `anon-${Math.random().toString(36).slice(2, 14)}`;
-
+  // 3. Stream the pipeline.
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -55,7 +68,7 @@ export async function POST(req: Request) {
         controller.enqueue(encoder.encode(JSON.stringify(event) + '\n'));
       };
       try {
-        await runAuditPipeline({ input: parsed.data, sessionId, send });
+        await runAuditPipeline({ input: parsed.data, userId: user.id, send });
       } catch (e) {
         send({ type: 'error', message: e instanceof Error ? e.message : String(e) });
       } finally {

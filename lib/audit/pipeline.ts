@@ -1,6 +1,7 @@
 import { scrapePage } from '../services/firecrawl';
 import { captureScreenshot } from '../services/screenshotone';
 import { searchResearchBatch } from '../services/tavily';
+import { extractStyleTokens } from '../services/style-tokens';
 import { subTools } from '../sub-tools';
 import {
   createAudit,
@@ -23,17 +24,17 @@ export type StreamEvent =
 
 export interface PipelineOptions {
   input: AuditInput;
-  sessionId: string;
+  userId: string;
   send: (event: StreamEvent) => void;
 }
 
 const MAX_PAGES = 5;
 
-export async function runAuditPipeline({ input, sessionId, send }: PipelineOptions): Promise<void> {
+export async function runAuditPipeline({ input, userId, send }: PipelineOptions): Promise<void> {
   // 1. Create audit row
   let auditId: string | null = null;
   try {
-    const audit = await createAudit(input, sessionId);
+    const audit = await createAudit(input, userId);
     auditId = audit.id;
     send({ type: 'audit_id', id: audit.id });
   } catch (e) {
@@ -88,7 +89,13 @@ export async function runAuditPipeline({ input, sessionId, send }: PipelineOptio
       throw new Error('Could not scrape any pages from this site.');
     }
 
-    // 4. Persist page artifacts (one row per scraped page; screenshot attached to home)
+    // 4. Declared-token extraction across all scraped pages (deduped stylesheets).
+    //    Returns null on failure — non-fatal, the LLM just won't see the token block.
+    const styleTokens = await extractStyleTokens(
+      pages.map((p) => ({ url: p.url, html: p.scraped.html })),
+    );
+
+    // 5. Persist page artifacts (one row per scraped page; screenshot attached to home)
     await writePageArtifacts(
       auditId,
       pages.map((p) => ({
@@ -99,7 +106,7 @@ export async function runAuditPipeline({ input, sessionId, send }: PipelineOptio
       })),
     );
 
-    // 5. LLM analysis over all pages
+    // 6. LLM analysis over all pages
     send({ type: 'stage', stage: 'analyzing', message: 'reasoning through the findings…' });
     await writeProgressEvent(auditId, 'analyzing');
     await updateAuditStatus(auditId, 'analyzing');
@@ -109,9 +116,11 @@ export async function runAuditPipeline({ input, sessionId, send }: PipelineOptio
       subTool,
       pages,
       attachmentRoles: discovery.attachmentRoles,
+      sharedRoles: discovery.sharedRoles,
       missingRoles: discovery.missingRoles,
       screenshotUrl: screenshot?.url ?? null,
       research,
+      styleTokens,
     });
 
     // 6. Persist findings + sources

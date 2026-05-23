@@ -9,6 +9,7 @@
 import { converse } from '../services/llm';
 import type { ScrapedPage } from '../services/firecrawl';
 import type { ResearchHit } from '../services/tavily';
+import type { DesignTokens } from '../services/style-tokens';
 import type { SubToolModule } from '../sub-tools';
 import type { AuditFinding, AuditInput, AuditReport } from './types';
 
@@ -28,9 +29,17 @@ export interface AnalyzeInput {
   subTool: SubToolModule;
   pages: AnalyzePage[];
   attachmentRoles: { role: string; label: string; url: string }[];
+  sharedRoles: {
+    role: string;
+    label: string;
+    hostRole: string;
+    hostLabel: string;
+    hostUrl: string;
+  }[];
   missingRoles: { role: string; label: string }[];
   screenshotUrl: string | null;
   research: ResearchHit[];
+  styleTokens: DesignTokens | null;
 }
 
 export async function analyze(args: AnalyzeInput): Promise<AuditReport> {
@@ -77,8 +86,24 @@ HANDLING PAGES NOT SCRAPED
 - "PAGES FOUND ONLY AS DOWNLOADS": the content exists but is behind a file download (e.g. a PDF resume).
   Do NOT treat this as missing. Judge whether forcing a download is appropriate friction for this
   audience and category — it is often a minor/medium issue, rarely critical.
-- "PAGES NOT FOUND": no such page exists on the site. Assess whether its absence is a genuine
-  usability problem for this category before flagging it (some categories don't need every page).
+- "SHARED-PAGE ROLES": a role's content likely lives within another page we did scrape
+  (e.g. portfolio Experience embedded in the About page). When evaluating that role, look at the
+  HOST page's content. Do NOT mark the role as missing. If the host page lacks the role's content
+  entirely, you may flag it as a "below the fold / not on a dedicated page" finding only if doing
+  so is genuinely warranted for the category.
+- "PAGES NOT FOUND": no such page exists on the site, and no shared host was identified.
+  Assess whether its absence is a genuine usability problem for this category before flagging it
+  (some categories don't need every page).
+
+DECLARED DESIGN TOKENS (when provided)
+- The "DECLARED DESIGN TOKENS" block lists the styles the site DECLARES in its CSS, with usage counts.
+  Note: these are declared values, not necessarily what visually renders. They are still a strong
+  signal for *design-system consistency*: a healthy design system usually shows a small palette,
+  a clear type scale, and a regular spacing rhythm.
+- ALWAYS include exactly one finding with parameter "design consistency" when this block is present,
+  evaluating the typography sprawl, palette sprawl, and spacing-scale coherence. Severity should
+  reflect how chaotic the declarations are (a site with 40 distinct font sizes and 60 distinct
+  colors usually means a 'high' design-debt finding; a clean small token set is 'low' or omitted).
 
 OUTPUT FORMAT
 Respond with ONLY a valid JSON object matching this exact shape, wrapped in a single \`\`\`json code block:
@@ -110,8 +135,10 @@ function buildUserPrompt({
   input,
   pages,
   attachmentRoles,
+  sharedRoles,
   missingRoles,
   research,
+  styleTokens,
 }: AnalyzeInput): string {
   const pageBlocks = pages
     .map((p) => {
@@ -133,6 +160,16 @@ ${md}`;
       ? attachmentRoles.map((a) => `- ${a.label}: ${a.url}`).join('\n')
       : '(none)';
 
+  const sharedBlock =
+    sharedRoles.length > 0
+      ? sharedRoles
+          .map(
+            (s) =>
+              `- ${s.label}: content likely lives inside the ${s.hostLabel} page (${s.hostUrl}). Evaluate that role's content within the host page; do not flag as missing.`,
+          )
+          .join('\n')
+      : '(none)';
+
   const missingBlock =
     missingRoles.length > 0
       ? missingRoles.map((m) => `- ${m.label}`).join('\n')
@@ -150,13 +187,47 @@ ${pageBlocks}
 ----- PAGES FOUND ONLY AS DOWNLOADS (content exists, but behind a file) -----
 ${attachmentBlock}
 
+----- SHARED-PAGE ROLES (content lives inside a sibling page) -----
+${sharedBlock}
+
 ----- PAGES NOT FOUND ON THE SITE -----
 ${missingBlock}
+
+----- DECLARED DESIGN TOKENS (CSS declarations across all scraped pages) -----
+${formatTokens(styleTokens)}
 
 ----- RESEARCH SNIPPETS (cite when directly applicable) -----
 ${researchBlock || '(no research returned)'}
 
 Produce the JSON audit now.`;
+}
+
+function formatTokens(t: DesignTokens | null): string {
+  if (!t) return '(extraction skipped or failed)';
+  const fmtList = (items: { value: string; count: number }[], cap = 12) =>
+    items
+      .slice(0, cap)
+      .map((x) => `${x.value} (×${x.count})`)
+      .join(', ') || '(none)';
+
+  return `META: ${t.meta.pagesConsidered} pages · ${t.meta.stylesheetsFetched}/${t.meta.stylesheetsConsidered} stylesheets fetched · ${formatBytes(t.meta.totalCssBytes)} CSS · ${t.meta.inlineStyleBlocks} inline <style> blocks · ${t.meta.inlineStyleAttributes} inline style="" attrs
+DISTINCT COUNTS: ${t.meta.distinctColors} colors · ${t.meta.distinctFontSizes} font-sizes · ${t.meta.distinctSpacingValues} spacing values
+
+PALETTE (top declared colors): ${fmtList(t.palette, 16)}
+FONT FAMILIES: ${fmtList(t.typography.fontFamilies)}
+FONT SIZES: ${fmtList(t.typography.fontSizes, 16)}
+FONT WEIGHTS: ${fmtList(t.typography.fontWeights)}
+LINE HEIGHTS: ${fmtList(t.typography.lineHeights)}
+LETTER SPACINGS: ${fmtList(t.typography.letterSpacings)}
+SPACING VALUES: ${fmtList(t.spacing, 20)}
+BORDER RADII: ${fmtList(t.borderRadii)}
+SHADOWS: ${fmtList(t.shadows, 6)}`;
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / 1024 / 1024).toFixed(2)}MB`;
 }
 
 function parseReport(rawText: string): AuditReport {
@@ -226,7 +297,8 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
-function mockAnalyze({ input, subTool, pages, research }: AnalyzeInput): AuditReport {
+function mockAnalyze({ input, subTool, pages, research, styleTokens }: AnalyzeInput): AuditReport {
+  void styleTokens;
   const pickedParams = subTool.parameters.slice(0, 4);
   const findings = pickedParams.map((parameter, i) => ({
     parameter,

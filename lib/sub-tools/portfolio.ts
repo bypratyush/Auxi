@@ -28,6 +28,11 @@ export const portfolioModule: SubToolModule = {
         priority: 2,
         pathPatterns: [/\/(experience|resume|cv|career|history|background)(\/|$)/i],
         maxCount: 1,
+        // Experience content frequently lives within the About page on portfolios
+        // (career timeline, work history sections). When no dedicated experience
+        // page exists, we record the About page as host and signal this to the LLM
+        // rather than flagging Experience as missing.
+        sharesPageWith: ['about'],
       },
       {
         role: 'about',
