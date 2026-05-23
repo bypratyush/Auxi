@@ -14,7 +14,7 @@ export function UserMenu() {
     const supabase = createSupabaseBrowserClient();
     let active = true;
 
-    const extractData = (user: User | null) => {
+    const extractData = (user: User | null | undefined) => {
       if (!user) {
         setEmail(null);
         setFirstName(null);
