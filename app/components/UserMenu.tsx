@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { createSupabaseBrowserClient } from '@/lib/supabase/browser';
+import type { User } from '@supabase/supabase-js';
 
 export function UserMenu() {
   const [email, setEmail] = useState<string | null>(null);
@@ -13,7 +14,7 @@ export function UserMenu() {
     const supabase = createSupabaseBrowserClient();
     let active = true;
 
-    const extractData = (user: any) => {
+    const extractData = (user: User | null) => {
       if (!user) {
         setEmail(null);
         setFirstName(null);
